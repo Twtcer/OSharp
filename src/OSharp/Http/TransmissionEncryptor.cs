@@ -50,7 +50,7 @@ namespace OSharp.Http
         {
             data.CheckNotNullOrEmpty("data");
 
-            string separator = GetSeparator();
+            string separator = GetSeparator(_separator);
             if (!data.Contains(separator))
             {
                 return data;
@@ -83,7 +83,7 @@ namespace OSharp.Http
         {
             data.CheckNotNull("data");
 
-            string separator = GetSeparator();
+            string separator = GetSeparator(_separator);
             //获取正文摘要
             string signData = RsaHelper.SignData(data, _ownPrivateKey);
             data = new[] { data, signData }.ExpandAndToString(separator);
@@ -92,13 +92,13 @@ namespace OSharp.Http
             data = aes.Encrypt(data);
             //RSA加密AES密钥
             byte[] keyBytes = aes.Key.ToBytes();
-            string enDesKey = Convert.ToBase64String(RsaHelper.Encrypt(keyBytes, _facePublicKey));
-            return new[] { enDesKey, data }.ExpandAndToString(separator);
+            string enAesKey = Convert.ToBase64String(RsaHelper.Encrypt(keyBytes, _facePublicKey));
+            return new[] { enAesKey, data }.ExpandAndToString(separator);
         }
 
-        private string GetSeparator()
+        private static string GetSeparator(string separator)
         {
-            return Convert.ToBase64String(Encoding.UTF8.GetBytes(_separator));
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(separator));
         }
     }
 }

@@ -14,8 +14,9 @@ using System.Security.Claims;
 using System.Security.Principal;
 using System.Threading.Tasks;
 
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -26,32 +27,30 @@ using OSharp.Data;
 using OSharp.Dependency;
 using OSharp.Entity;
 using OSharp.EventBuses;
+using OSharp.Logging;
 using OSharp.Reflection;
 
 
 namespace Microsoft.Extensions.DependencyInjection
 {
-    public static partial class ServiceExtensions
+    public static class ServiceExtensions
     {
         #region IServiceCollection
 
         /// <summary>
         /// 创建OSharp构建器，开始构建OSharp服务
         /// </summary>
-        public static IOsharpBuilder AddOSharp(this IServiceCollection services)
+        public static IOsharpBuilder AddOSharp(this IServiceCollection services, Action<OsharpOptions> optionAction = null)
         {
             Check.NotNull(services, nameof(services));
 
-            IConfiguration configuration = services.GetConfiguration();
-            Singleton<IConfiguration>.Instance = configuration;
-
             //初始化所有程序集查找器
-            services.TryAddSingleton<IAllAssemblyFinder>(new AppDomainAllAssemblyFinder());
+            services.GetOrAddSingletonInstance(() => new StartupLogger());
 
-            IOsharpBuilder builder = services.GetSingletonInstanceOrNull<IOsharpBuilder>() ?? new OsharpBuilder(services);
-            services.TryAddSingleton<IOsharpBuilder>(builder);
-
+            IOsharpBuilder builder = services.GetOrAddSingletonInstance<IOsharpBuilder>(() => new OsharpBuilder(services));
             builder.AddCorePack();
+
+            optionAction?.Invoke(builder.Options);
 
             return builder;
         }
@@ -63,6 +62,24 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             return services.GetSingletonInstanceOrNull<IConfiguration>();
         }
+
+        /// <summary>
+        /// 获取<see cref="OsharpOptions"/>配置信息
+        /// </summary>
+        public static OsharpOptions GetOsharpOptions(this IServiceCollection services)
+        {
+            IConfiguration configuration = services.GetConfiguration();
+            return configuration.GetOsharpOptions();
+        }
+
+        /// <summary>
+        /// 判断指定服务类型是否存在
+        /// </summary>
+        public static bool AnyServiceType(this IServiceCollection services, Type serviceType)
+        {
+            return services.Any(m => m.ServiceType == serviceType);
+        }
+
         /// <summary>
         /// 替换服务
         /// </summary>
@@ -89,20 +106,6 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         /// <summary>
-        /// 获取或添加指定类型查找器
-        /// </summary>
-        public static TTypeFinder GetOrAddTypeFinder<TTypeFinder>(this IServiceCollection services, Func<IAllAssemblyFinder, TTypeFinder> factory)
-            where TTypeFinder : class
-        {
-            return services.GetOrAddSingletonInstance<TTypeFinder>(() =>
-            {
-                IAllAssemblyFinder allAssemblyFinder =
-                    services.GetOrAddSingletonInstance<IAllAssemblyFinder>(() => new AppDomainAllAssemblyFinder(true));
-                return factory(allAssemblyFinder);
-            });
-        }
-
-        /// <summary>
         /// 如果指定服务不存在，创建实例并添加
         /// </summary>
         public static TServiceType GetOrAddSingletonInstance<TServiceType>(this IServiceCollection services, Func<TServiceType> factory) where TServiceType : class
@@ -112,6 +115,7 @@ namespace Microsoft.Extensions.DependencyInjection
             {
                 item = factory();
                 services.AddSingleton<TServiceType>(item);
+                services.ServiceLogDebug(typeof(TServiceType), item.GetType(), nameof(ServiceExtensions));
             }
             return item;
         }
@@ -151,6 +155,67 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         /// <summary>
+        /// 添加服务调试日志
+        /// </summary>
+        public static IServiceCollection ServiceLogDebug(this IServiceCollection services, ServiceDescriptor[] oldDescriptors, string logName)
+        {
+            var list = services.Except(oldDescriptors);
+            foreach (ServiceDescriptor desc in list)
+            {
+                if (desc.ImplementationType != null)
+                {
+                    services.ServiceLogDebug(desc.ServiceType, desc.ImplementationType, logName, desc.Lifetime);
+                    continue;
+                }
+
+                if (desc.ImplementationInstance != null)
+                {
+                    services.ServiceLogDebug(desc.ServiceType, desc.ImplementationInstance.GetType(), logName, desc.Lifetime);
+                }
+            }
+
+            return services;
+        }
+
+        /// <summary>
+        /// 添加服务调试日志
+        /// </summary>
+        public static IServiceCollection ServiceLogDebug<TServiceType, TImplementType>(this IServiceCollection services, string logName, ServiceLifetime lifetime = ServiceLifetime.Singleton)
+        {
+            Type serviceType = typeof(TServiceType), implementType = typeof(TImplementType);
+            return services.ServiceLogDebug(serviceType, implementType, logName, lifetime);
+        }
+
+        /// <summary>
+        /// 添加服务调试日志
+        /// </summary>
+        public static IServiceCollection ServiceLogDebug(this IServiceCollection services, Type serviceType, Type implementType, string logName, ServiceLifetime lifetime = ServiceLifetime.Singleton)
+        {
+            string lifetimeType = lifetime == ServiceLifetime.Singleton ? "单例" : lifetime == ServiceLifetime.Scoped ? "作用域" : "瞬时";
+            return services.LogDebug($"添加服务，{lifetimeType}，{serviceType.FullName} -> {implementType.FullName}", logName);
+        }
+
+        /// <summary>
+        /// 添加启动调试日志
+        /// </summary>
+        public static IServiceCollection LogDebug(this IServiceCollection services, string message, string logName)
+        {
+            StartupLogger logger = services.GetOrAddSingletonInstance(() => new StartupLogger());
+            logger.LogDebug(message, logName);
+            return services;
+        }
+
+        /// <summary>
+        /// 添加启动消息日志
+        /// </summary>
+        public static IServiceCollection LogInformation(this IServiceCollection services, string message, string logName)
+        {
+            StartupLogger logger = services.GetOrAddSingletonInstance(() => new StartupLogger());
+            logger.LogInformation(message, logName);
+            return services;
+        }
+
+        /// <summary>
         /// 加载事件处理器
         /// </summary>
         public static IServiceCollection AddEventHandler<T>(this IServiceCollection services) where T : class, IEventHandler
@@ -184,6 +249,23 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         /// <summary>
+        /// 从服务提供者获取 <see cref="IUnitOfWork"/>
+        /// </summary>
+        /// <param name="provider">服务提供者</param>
+        /// <param name="enableTransaction">是否启用事务</param>
+        /// <returns></returns>
+        public static IUnitOfWork GetUnitOfWork(this IServiceProvider provider, bool enableTransaction = false)
+        {
+            IUnitOfWork unitOfWork = provider.GetRequiredService<IUnitOfWork>();
+            if (enableTransaction)
+            {
+                unitOfWork.EnableTransaction();
+            }
+
+            return unitOfWork;
+        }
+
+        /// <summary>
         /// 获取指定类型的日志对象
         /// </summary>
         /// <typeparam name="T">非静态强类型</typeparam>
@@ -202,8 +284,21 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <returns>日志对象</returns>
         public static ILogger GetLogger(this IServiceProvider provider, Type type)
         {
+            Check.NotNull(type, nameof(type));
             ILoggerFactory factory = provider.GetService<ILoggerFactory>();
             return factory.CreateLogger(type);
+        }
+
+        /// <summary>
+        /// 获取指定对象类型的日志对象
+        /// </summary>
+        /// <param name="provider"></param>
+        /// <param name="instance">要获取日志的类型对象，一般指当前类，即this</param>
+        public static ILogger GetLogger(this IServiceProvider provider, object instance)
+        {
+            Check.NotNull(instance, nameof(instance));
+            ILoggerFactory factory = provider.GetService<ILoggerFactory>();
+            return factory.CreateLogger(instance.GetType());
         }
 
         /// <summary>
@@ -211,17 +306,8 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         public static ILogger GetLogger(this IServiceProvider provider, string name)
         {
-            ILoggerFactory factory = provider.GetService<ILoggerFactory>();
+            ILoggerFactory factory = provider.GetRequiredService<ILoggerFactory>();
             return factory.CreateLogger(name);
-        }
-
-        /// <summary>
-        /// 获取指定实体类的上下文所在工作单元
-        /// </summary>
-        public static IUnitOfWork GetUnitOfWork<TEntity, TKey>(this IServiceProvider provider) where TEntity : IEntity<TKey>
-        {
-            IUnitOfWorkManager unitOfWorkManager = provider.GetService<IUnitOfWorkManager>();
-            return unitOfWorkManager.GetUnitOfWork<TEntity, TKey>();
         }
 
         /// <summary>
@@ -229,8 +315,8 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         public static IDbContext GetDbContext<TEntity, TKey>(this IServiceProvider provider) where TEntity : IEntity<TKey>
         {
-            IUnitOfWorkManager unitOfWorkManager = provider.GetService<IUnitOfWorkManager>();
-            return unitOfWorkManager.GetDbContext<TEntity, TKey>();
+            IUnitOfWork unitOfWork = provider.GetUnitOfWork();
+            return unitOfWork.GetEntityDbContext<TEntity, TKey>();
         }
 
         /// <summary>
@@ -238,7 +324,24 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         public static OsharpPack[] GetAllPacks(this IServiceProvider provider)
         {
-            return provider.GetServices<OsharpPack>().OrderBy(m => m.Level).ThenBy(m => m.Order).ThenBy(m => m.GetType().FullName).ToArray();
+            OsharpPack[] packs = provider.GetServices<OsharpPack>().OrderBy(m => m.Level).ThenBy(m => m.Order).ThenBy(m => m.GetType().FullName).ToArray();
+            return packs;
+        }
+
+        /// <summary>
+        /// 获取当前用户
+        /// </summary>
+        public static ClaimsPrincipal GetCurrentUser(this IServiceProvider provider)
+        {
+            try
+            {
+                IPrincipal user = provider.GetService<IPrincipal>();
+                return user as ClaimsPrincipal;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         /// <summary>
@@ -262,17 +365,13 @@ namespace Microsoft.Extensions.DependencyInjection
 
             return provider;
         }
+
         /// <summary>
         /// 执行<see cref="ServiceLifetime.Scoped"/>生命周期的业务逻辑
-        /// 1.当前处理<see cref="ServiceLifetime.Scoped"/>生命周期外，使用CreateScope创建<see cref="ServiceLifetime.Scoped"/>
-        /// 生命周期的ServiceProvider来执行，并释放资源
-        /// 2.当前处于<see cref="ServiceLifetime.Scoped"/>生命周期内，直接使用<see cref="ServiceLifetime.Scoped"/>的ServiceProvider来执行
         /// </summary>
-        public static void ExecuteScopedWork(this IServiceProvider provider, Action<IServiceProvider> action, bool useHttpScope = true)
+        public static void ExecuteScopedWork(this IServiceProvider provider, Action<IServiceProvider> action)
         {
-            using (IServiceScope scope = useHttpScope
-                ? provider.GetService<IHybridServiceScopeFactory>().CreateScope()
-                : provider.CreateScope())
+            using (IServiceScope scope = provider.CreateScope())
             {
                 action(scope.ServiceProvider);
             }
@@ -280,15 +379,10 @@ namespace Microsoft.Extensions.DependencyInjection
 
         /// <summary>
         /// 异步执行<see cref="ServiceLifetime.Scoped"/>生命周期的业务逻辑
-        /// 1.当前处理<see cref="ServiceLifetime.Scoped"/>生命周期外，使用CreateScope创建<see cref="ServiceLifetime.Scoped"/>
-        /// 生命周期的ServiceProvider来执行，并释放资源
-        /// 2.当前处于<see cref="ServiceLifetime.Scoped"/>生命周期内，直接使用<see cref="ServiceLifetime.Scoped"/>的ServiceProvider来执行
         /// </summary>
-        public static async Task ExecuteScopedWorkAsync(this IServiceProvider provider, Func<IServiceProvider, Task> action, bool useHttpScope = true)
+        public static async Task ExecuteScopedWorkAsync(this IServiceProvider provider, Func<IServiceProvider, Task> action)
         {
-            using (IServiceScope scope = useHttpScope
-                ? provider.GetService<IHybridServiceScopeFactory>().CreateScope()
-                : provider.CreateScope())
+            using (IServiceScope scope = provider.CreateScope())
             {
                 await action(scope.ServiceProvider);
             }
@@ -296,15 +390,10 @@ namespace Microsoft.Extensions.DependencyInjection
 
         /// <summary>
         /// 执行<see cref="ServiceLifetime.Scoped"/>生命周期的业务逻辑，并获取返回值
-        /// 1.当前处理<see cref="ServiceLifetime.Scoped"/>生命周期外，使用CreateScope创建<see cref="ServiceLifetime.Scoped"/>
-        /// 生命周期的ServiceProvider来执行，并释放资源
-        /// 2.当前处于<see cref="ServiceLifetime.Scoped"/>生命周期内，直接使用<see cref="ServiceLifetime.Scoped"/>的ServiceProvider来执行
         /// </summary>
-        public static TResult ExecuteScopedWork<TResult>(this IServiceProvider provider, Func<IServiceProvider, TResult> func, bool useHttpScope = true)
+        public static TResult ExecuteScopedWork<TResult>(this IServiceProvider provider, Func<IServiceProvider, TResult> func)
         {
-            using (IServiceScope scope = useHttpScope
-                ? provider.GetService<IHybridServiceScopeFactory>().CreateScope()
-                : provider.CreateScope())
+            using (IServiceScope scope = provider.CreateScope())
             {
                 return func(scope.ServiceProvider);
             }
@@ -312,59 +401,32 @@ namespace Microsoft.Extensions.DependencyInjection
 
         /// <summary>
         /// 执行<see cref="ServiceLifetime.Scoped"/>生命周期的业务逻辑，并获取返回值
-        /// 1.当前处理<see cref="ServiceLifetime.Scoped"/>生命周期外，使用CreateScope创建<see cref="ServiceLifetime.Scoped"/>
-        /// 生命周期的ServiceProvider来执行，并释放资源
-        /// 2.当前处于<see cref="ServiceLifetime.Scoped"/>生命周期内，直接使用<see cref="ServiceLifetime.Scoped"/>的ServiceProvider来执行
         /// </summary>
-        public static async Task<TResult> ExecuteScopedWorkAsync<TResult>(this IServiceProvider provider, Func<IServiceProvider, Task<TResult>> func, bool useHttpScope = true)
+        public static async Task<TResult> ExecuteScopedWorkAsync<TResult>(this IServiceProvider provider, Func<IServiceProvider, Task<TResult>> func)
         {
-            using (IServiceScope scope = useHttpScope
-                ? provider.GetService<IHybridServiceScopeFactory>().CreateScope()
-                : provider.CreateScope())
+            using (IServiceScope scope = provider.CreateScope())
             {
                 return await func(scope.ServiceProvider);
             }
+
         }
 
-        /// <summary>
-        /// 获取当前用户
-        /// </summary>
-        public static ClaimsPrincipal GetCurrentUser(this IServiceProvider provider)
-        {
-            try
-            {
-                IPrincipal user = provider.GetService<IPrincipal>();
-                return user as ClaimsPrincipal;
-            }
-            catch
-            {
-                return null;
-            }
-        }
         /// <summary>
         /// 开启一个事务处理
         /// </summary>
         /// <param name="provider">信赖注入服务提供程序</param>
         /// <param name="action">要执行的业务委托</param>
-        /// <param name="createScope">是否创建一个新的<see cref="IServiceScope"/>，如false，则使用传入的 provider</param>
-        public static void BeginUnitOfWorkTransaction(this IServiceProvider provider, Action<IServiceProvider> action, bool createScope = false)
+        public static void BeginUnitOfWorkTransaction(this IServiceProvider provider, Action<IServiceProvider> action)
         {
             Check.NotNull(provider, nameof(provider));
             Check.NotNull(action, nameof(action));
-            if (!createScope)
+
+            using (IServiceScope scope = provider.CreateScope())
             {
-                IServiceProvider scopeProvider = provider;
-                IUnitOfWorkManager unitOfWorkManager = scopeProvider.GetService<IUnitOfWorkManager>();
-                action(scopeProvider);
-                unitOfWorkManager.Commit();
-            }
-            else
-            {
-                using IServiceScope scope = provider.CreateScope();
                 IServiceProvider scopeProvider = scope.ServiceProvider;
-                IUnitOfWorkManager unitOfWorkManager = scopeProvider.GetService<IUnitOfWorkManager>();
+                IUnitOfWork unitOfWork = scopeProvider.GetUnitOfWork(true);
                 action(scopeProvider);
-                unitOfWorkManager.Commit();
+                unitOfWork.Commit();
             }
         }
 
@@ -373,23 +435,24 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         /// <param name="provider">信赖注入服务提供程序</param>
         /// <param name="actionAsync">要执行的业务委托</param>
-        /// <param name="createScope">是否创建一个新的<see cref="IServiceScope"/>，如false，则使用传入的 provider</param>
         public static async Task BeginUnitOfWorkTransactionAsync(this IServiceProvider provider,
-            Func<IServiceProvider, Task> actionAsync,
-            bool createScope = false)
+            Func<IServiceProvider, Task> actionAsync)
         {
             Check.NotNull(provider, nameof(provider));
             Check.NotNull(actionAsync, nameof(actionAsync));
-            IServiceProvider scopeProvider = provider;
-            if (createScope)
-            {
-                using IServiceScope scope = provider.CreateScope();
-                scopeProvider = scope.ServiceProvider;
-            }
 
-            IUnitOfWorkManager unitOfWorkManager = scopeProvider.GetService<IUnitOfWorkManager>();
-            await actionAsync(scopeProvider);
-            unitOfWorkManager.Commit();
+            using (IServiceScope scope = provider.CreateScope())
+            {
+                IServiceProvider scopeProvider = scope.ServiceProvider;
+
+                IUnitOfWork unitOfWork = scopeProvider.GetUnitOfWork(true);
+                await actionAsync(scopeProvider);
+#if NET5_0
+                await unitOfWork.CommitAsync();
+#else
+                unitOfWork.Commit();
+#endif
+            }
         }
         #endregion
 

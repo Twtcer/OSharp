@@ -15,12 +15,14 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.Tokens;
 
 using OSharp.AspNetCore;
+using OSharp.Authentication.Cookies;
 using OSharp.Authentication.JwtBearer;
 using OSharp.Core.Options;
 using OSharp.Core.Packs;
@@ -59,10 +61,18 @@ namespace OSharp.Authentication
         /// <returns></returns>
         public override IServiceCollection AddServices(IServiceCollection services)
         {
+            OsharpOptions options = services.GetOsharpOptions();
+            services.TryAddScoped<IUserClaimsProvider, UserClaimsProvider<TUser, TUserKey>>();
+
+            string defaultSchema = IdentityConstants.ApplicationScheme;
+            if (options.Jwt?.Enabled == true && options.Cookie?.Enabled != true)
+            {
+                defaultSchema = JwtBearerDefaults.AuthenticationScheme;
+            }
             AuthenticationBuilder builder = services.AddAuthentication(opts =>
             {
-                opts.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-                opts.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+                opts.DefaultScheme = defaultSchema;
+                opts.DefaultAuthenticateScheme = defaultSchema;
             });
             AddJwtBearer(services, builder);
             AddCookie(services, builder);
@@ -87,28 +97,32 @@ namespace OSharp.Authentication
         /// </summary>
         protected virtual AuthenticationBuilder AddJwtBearer(IServiceCollection services, AuthenticationBuilder builder)
         {
-            services.TryAddScoped<IJwtBearerService, JwtBearerService<TUser, TUserKey>>();
-            services.TryAddScoped<IAccessClaimsProvider, AccessClaimsProvider<TUser, TUserKey>>();
+            OsharpOptions option = services.GetOsharpOptions();
+            JwtOptions jwt = option.Jwt;
+            if (jwt?.Enabled != true)
+            {
+                return builder;
+            }
 
-            IConfiguration configuration = services.GetConfiguration();
+            services.TryAddScoped<IJwtBearerService, JwtBearerService<TUser, TUserKey>>();
             builder.AddJwtBearer(JwtBearerDefaults.AuthenticationScheme,
-                jwt =>
+                opts =>
                 {
-                    string secret = configuration["OSharp:Jwt:Secret"];
+                    string secret = jwt.Secret;
                     if (secret.IsNullOrEmpty())
                     {
-                        throw new OsharpException("配置文件中OSharp配置的Jwt节点的Secret不能为空");
+                        throw new OsharpException("配置文件中节点OSharp:Jwt:Secret不能为空");
                     }
 
-                    jwt.TokenValidationParameters = new TokenValidationParameters()
+                    opts.TokenValidationParameters = new TokenValidationParameters()
                     {
-                        ValidIssuer = configuration["OSharp:Jwt:Issuer"] ?? "osharp identity",
-                        ValidAudience = configuration["OSharp:Jwt:Audience"] ?? "osharp client",
+                        ValidIssuer = jwt.Issuer ?? "osharp identity",
+                        ValidAudience = jwt.Audience ?? "osharp client",
                         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret)),
                         LifetimeValidator = (nbf, exp, token, param) => exp > DateTime.UtcNow
                     };
 
-                    jwt.Events = new OsharpJwtBearerEvents();
+                    opts.Events = new OsharpJwtBearerEvents();
                 });
 
             return builder;
@@ -116,11 +130,36 @@ namespace OSharp.Authentication
 
         protected virtual AuthenticationBuilder AddCookie(IServiceCollection services, AuthenticationBuilder builder)
         {
-            //builder.AddCookie(CookieAuthenticationDefaults.AuthenticationScheme,
-            //    opts =>
-            //    {
-            //        opts.Events = new OsharpCookieAuthenticationEvents();
-            //    });
+            OsharpOptions options = services.GetOsharpOptions();
+            CookieOptions cookie = options.Cookie;
+            if (cookie?.Enabled != true)
+            {
+                return builder;
+            }
+
+            services.AddScoped<OsharpCookieAuthenticationEvents>();
+            builder.AddIdentityCookies(b =>
+            {
+                b.ApplicationCookie.Configure(opts =>
+                {
+                    if (cookie.CookieName != null)
+                    {
+                        opts.Cookie.Name = cookie.CookieName;
+                    }
+
+                    opts.LoginPath = cookie.LoginPath ?? opts.LoginPath;
+                    opts.LogoutPath = cookie.LogoutPath ?? opts.LogoutPath;
+                    opts.AccessDeniedPath = cookie.AccessDeniedPath ?? opts.AccessDeniedPath;
+                    opts.ReturnUrlParameter = cookie.ReturnUrlParameter ?? opts.ReturnUrlParameter;
+                    opts.SlidingExpiration = cookie.SlidingExpiration;
+                    if (cookie.ExpireMins > 0)
+                    {
+                        opts.ExpireTimeSpan = TimeSpan.FromMinutes(cookie.ExpireMins);
+                    }
+
+                    opts.EventsType = typeof(OsharpCookieAuthenticationEvents);
+                });
+            });
             return builder;
         }
 
@@ -129,10 +168,9 @@ namespace OSharp.Authentication
         /// </summary>
         protected virtual AuthenticationBuilder AddOAuth2(IServiceCollection services, AuthenticationBuilder builder)
         {
-            IConfiguration configuration = services.GetConfiguration();
-            IConfigurationSection section = configuration.GetSection("OSharp:OAuth2");
-            IDictionary<string, OAuth2Options> dict = section.Get<Dictionary<string, OAuth2Options>>();
-            if (dict == null)
+            OsharpOptions osharpOptions = services.GetOsharpOptions();
+            IDictionary<string, OAuth2Options> dict = osharpOptions.OAuth2S;
+            if (dict == null || dict.Count == 0)
             {
                 return builder;
             }

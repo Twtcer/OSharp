@@ -19,7 +19,7 @@ namespace OSharp.Authorization.Functions
     /// <summary>
     /// 功能信息基类
     /// </summary>
-    [DebuggerDisplay("{Name}[{Area}/{Controller}/{Action}]")]
+    [DebuggerDisplay("{ToString()}")]
     public abstract class FunctionBase : EntityBase<Guid>, IFunction
     {
         /// <summary>
@@ -95,9 +95,22 @@ namespace OSharp.Authorization.Functions
         public bool IsCacheSliding { get; set; }
 
         /// <summary>
+        /// 获取或设置 是否从库读取数据
+        /// </summary>
+        [DisplayName("是否从库")]
+        public bool IsSlaveDatabase { get; set; }
+
+        /// <summary>
         /// 获取或设置 是否锁定
         /// </summary>
         [DisplayName("是否锁定")]
         public bool IsLocked { get; set; }
+
+        /// <summary>返回一个表示当前对象的 string。</summary>
+        /// <returns>表示当前对象的字符串。</returns>
+        public override string ToString()
+        {
+            return $"{Name}[{Area}/{Controller}/{Action}]";
+        }
     }
 }

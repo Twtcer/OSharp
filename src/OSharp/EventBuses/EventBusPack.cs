@@ -46,11 +46,8 @@ namespace OSharp.EventBuses
             services.TryAddSingleton<IEventStore, InMemoryEventStore>();
             services.TryAddSingleton<IEventBus, PassThroughEventBus>();
 
-            IEventHandlerTypeFinder handlerTypeFinder =
-                services.GetOrAddTypeFinder<IEventHandlerTypeFinder>(assemblyFinder => new EventHandlerTypeFinder(assemblyFinder));
-            
             //向服务容器注册所有事件处理器类型
-            //Type[] eventHandlerTypes = handlerTypeFinder.FindAll();
+            //Type[] eventHandlerTypes = AssemblyManager.FindTypesByBase(typeof(IEventHandler<>));
             //foreach (Type handlerType in eventHandlerTypes)
             //{
             //    services.TryAddTransient(handlerType);
